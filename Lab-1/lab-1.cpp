@@ -5,10 +5,10 @@
 #include <stdexcept>
 #include <cmath>
 
-// Перелік типів лексем (токенів) - поки без змінних
+// Перелік типів лексем (токенів)
 enum class TokenType {
     NONE,
-    DELIMITER, // Роздільник (+, -, *, /, (, ))
+    DELIMITER, // Роздільник (+, -, *, /, %, ^, (, ))
     NUMBER     // Число
 };
 
@@ -18,6 +18,17 @@ struct Token {
     TokenType type;
 };
 
+/*
+ * Клас Parser реалізує рекурсивно-низхідний парсер.
+ * Кожен метод parse... відповідає за свій рівень пріоритету операцій.
+ * Ієрархія викликів:
+ * parseAddSubtract (найнижчий пріоритет)
+ * -> parseMultiplyDivide
+ * -> parsePower
+ * -> parseUnary
+ * -> parseParentheses
+ * -> parseAtom (найвищий пріоритет)
+ */
 class Parser {
 public:
     Parser();
@@ -28,15 +39,18 @@ private:
     size_t expr_pos;
     Token current_token;
 
+    // Метод для лексичного аналізу
     void getToken();
-    void putback();
 
-    double parseAddSubtract();
-    double parseMultiplyDivide();
-    double parseUnary();
-    double parseParentheses();
-    double parseAtom();
+    // Рекурсивно-низхідні методи парсингу
+    double parseAddSubtract();    // Обробка '+' та '-'
+    double parseMultiplyDivide(); // Обробка '*', '/', '%'
+    double parsePower();          // Обробка '^'
+    double parseUnary();          // Обробка унарних '+' та '-'
+    double parseParentheses();    // Обробка дужок '()'
+    double parseAtom();           // Обробка чисел
 
+    // Обробка помилок
     void handleError(const std::string& error_message);
 };
 
@@ -52,12 +66,6 @@ double Parser::evaluate(const std::string& expr) {
     return parseAddSubtract();
 }
 
-void Parser::putback() {
-    if (!current_token.value.empty()) {
-        expr_pos -= current_token.value.length();
-    }
-}
-
 void Parser::getToken() {
     current_token.type = TokenType::NONE;
     current_token.value = "";
@@ -67,12 +75,11 @@ void Parser::getToken() {
     while (expr_pos < expression.length() && isspace(expression[expr_pos])) {
         expr_pos++;
     }
-
     if (expr_pos >= expression.length()) return;
 
     char current_char = expression[expr_pos];
 
-    if (std::string("+-*/()").find(current_char) != std::string::npos) {
+    if (std::string("+-*/%^()").find(current_char) != std::string::npos) {
         current_token.type = TokenType::DELIMITER;
         current_token.value += expression[expr_pos++];
     } else if (isdigit(current_char) || current_char == '.') {
@@ -83,6 +90,7 @@ void Parser::getToken() {
     }
 }
 
+// Рівень 2: Додавання та віднімання
 double Parser::parseAddSubtract() {
     double result = parseMultiplyDivide();
     while (current_token.value == "+" || current_token.value == "-") {
@@ -95,22 +103,37 @@ double Parser::parseAddSubtract() {
     return result;
 }
 
+// Рівень 3: Множення, ділення, залишок
 double Parser::parseMultiplyDivide() {
-    double result = parseUnary();
-    while (current_token.value == "*" || current_token.value == "/") {
+    double result = parsePower();
+    while (current_token.value == "*" || current_token.value == "/" || current_token.value == "%") {
         char op = current_token.value[0];
         getToken();
-        double temp = parseUnary();
+        double temp = parsePower();
         if (op == '*') {
             result *= temp;
         } else if (op == '/') {
             if (temp == 0) handleError("Ділення на нуль.");
             result /= temp;
+        } else if (op == '%') {
+            result = fmod(result, temp);
         }
     }
     return result;
 }
 
+// Рівень 4: Піднесення до степеня (право-асоціативна операція)
+double Parser::parsePower() {
+    double result = parseUnary();
+    if (current_token.value == "^") {
+        getToken();
+        double exponent = parsePower(); // Рекурсивний виклик для правої асоціативності
+        result = pow(result, exponent);
+    }
+    return result;
+}
+
+// Рівень 5: Унарний плюс та мінус
 double Parser::parseUnary() {
     char op = 0;
     if (current_token.value == "+" || current_token.value == "-") {
@@ -124,12 +147,13 @@ double Parser::parseUnary() {
     return result;
 }
 
+// Рівень 6: Дужки
 double Parser::parseParentheses() {
     if (current_token.value == "(") {
         getToken();
         double result = parseAddSubtract();
         if (current_token.value != ")") {
-            handleError("Незакриті дужки.");
+            handleError("Синтаксична помилка: очікувались закриваючі дужки ')'.");
         }
         getToken();
         return result;
@@ -137,21 +161,23 @@ double Parser::parseParentheses() {
     return parseAtom();
 }
 
+// Рівень 7: Атом (число)
 double Parser::parseAtom() {
     double result = 0.0;
     if (current_token.type == TokenType::NUMBER) {
         try {
             result = std::stod(current_token.value);
         } catch (const std::invalid_argument&) {
-            handleError("Невірний формат числа.");
+            handleError("Невірний формат числа: " + current_token.value);
         }
         getToken();
     } else {
-        handleError("Синтаксична помилка (очікувалось число).");
+        handleError("Синтаксична помилка: очікувалось число, а не '" + current_token.value + "'.");
     }
     return result;
 }
 
+// Централізована обробка помилок
 void Parser::handleError(const std::string& error_message) {
     throw std::runtime_error(error_message);
 }
@@ -160,7 +186,7 @@ int main() {
     Parser parser;
     std::string expression;
 
-    std::cout << "Простий калькулятор. Введіть '.' для виходу.\n";
+    std::cout << "Калькулятор v2.0. Додано '^' та '%'. Введіть '.' для виходу.\n";
 
     while (true) {
         std::cout << ">> ";
